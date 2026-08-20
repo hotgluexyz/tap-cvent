@@ -217,16 +217,21 @@ class OrdersStream(CventStream):
 
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
-        th.Property("orderNumber", th.StringType),
+        th.Property("number", th.StringType),
+        th.Property("invoiceNumber", th.StringType),
         th.Property("event", nested()),
         th.Property("attendee", nested()),
         th.Property("contact", nested()),
         th.Property("type", th.StringType),
-        th.Property("status", th.StringType),
-        th.Property("subtotal", th.NumberType),
-        th.Property("total", th.NumberType),
-        th.Property("currency", th.StringType),
-        th.Property("orderDate", th.DateTimeType),
+        th.Property(
+            "cancelled",
+            th.BooleanType,
+            description="True after the registration is cancelled; this is not a refund",
+        ),
+        th.Property("amountOrdered", th.NumberType),
+        th.Property("amountPaid", th.NumberType),
+        th.Property("amountDue", th.NumberType),
+        th.Property("paymentMethod", th.StringType),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
     ).to_dict()
@@ -247,10 +252,17 @@ class OrderItemsStream(EventNestedStream):
         th.Property("attendee", nested()),
         # {id, type} where type is AdmissionItem, DonationItem, QuantityItem, etc.
         th.Property("product", nested()),
+        th.Property("name", th.StringType),
+        th.Property(
+            "active",
+            th.BooleanType,
+            description="False after the line is cancelled; paid amount can still remain",
+        ),
         th.Property("quantity", th.NumberType),
-        th.Property("unitPrice", th.NumberType),
-        th.Property("amount", th.NumberType),
-        th.Property("currency", th.StringType),
+        th.Property("price", th.NumberType),
+        th.Property("amountOrdered", th.NumberType),
+        th.Property("amountPaid", th.NumberType),
+        th.Property("amountDue", th.NumberType),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
     ).to_dict()
@@ -341,6 +353,13 @@ class AttendeesStream(EventChildStream):
         th.Property("registrationType", nested()),
         th.Property("registrationPath", nested()),
         th.Property("status", th.StringType, description="Accepted, Cancelled, ..."),
+        th.Property("confirmationNumber", th.StringType),
+        th.Property("registrationCancelledAt", th.DateTimeType),
+        th.Property(
+            "credit",
+            th.NumberType,
+            description="Account credit after cancel; 0 until a refund is recorded",
+        ),
         th.Property("guest", th.BooleanType),
         th.Property(
             "primaryId",
