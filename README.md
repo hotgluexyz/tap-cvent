@@ -4,21 +4,76 @@ A [Singer](https://www.singer.io/) tap that extracts data from **Cvent**. It is 
 
 ## Features
 
-- **REST**-style HTTP streams (see `client.py` / `streams.py`).
-- **OAuth2** with access token support via Hotglue (`access_token_support` on the tap).
-
+- **REST**-style HTTP streams against the Cvent Event API (see `client.py` / `streams.py`).
+- **OAuth2 client credentials** with access token support via Hotglue (`access_token_support` on the tap).
 - Configurable **`api_url`** and optional **`start_date`** (see [Configuration](#configuration)).
-- Incremental sync is scaffolded with placeholder **`id`** (primary key) and **`modified_at`** (replication key); replace with real fields per stream in `streams.py`.
+- Token-based pagination and `lastModified` incremental sync where the endpoint supports it.
 
 ### Streams
 
-| Stream | Endpoint / notes | Primary key | Replication key |
-| ------ | ---------------- | ----------- | ----------------- |
-| `contacts` | `GET` + `/contacts` (default path; TODO: confirm with API) | `id` (TODO) | `modified_at` (TODO) |
-| `events` | `GET` + `/events` (default path; TODO: confirm with API) | `id` (TODO) | `modified_at` (TODO) |
-| `transactions` | `GET` + `/transactions` (default path; TODO: confirm with API) | `id` (TODO) | `modified_at` (TODO) |
+All paths are relative to `api_url` (default `https://api-platform.cvent.com/ea`). Every
+stream uses `id` as its primary key.
 
-TODO: Describe pagination, rate limits, and any stream-specific query parameters in this section.
+Account-wide streams:
+
+| Stream | Endpoint | Replication key | Role |
+| ------ | -------- | --------------- | ---- |
+| `events` | `GET /events` | `lastModified` | Event context; parent of the event-scoped streams |
+| `contacts` | `GET /contacts` | `lastModified` | Address book; matched to DonorPerfect constituents |
+| `contact_types` | `GET /contact-types` | full table | Lookup |
+| `orders` | `GET /orders` | `lastModified` | Purchase intent, **not** money |
+| `order_items` | `GET /orders/items` | `lastModified` | Line items purchased |
+| `transactions` | `GET /transactions` | `lastModified` | Charge/refund headers — the gift source |
+| `transaction_items` | `GET /transactions/items` | `lastModified` | Charge lines carrying `product.{id,type}` |
+
+Event-scoped streams, synced as children of `events` with `?eventId=` and stamped with
+an `event_id` field:
+
+| Stream | Endpoint | Replication key | Role |
+| ------ | -------- | --------------- | ---- |
+| `attendees` | `GET /attendees` | `lastModified` | Registrations / participation |
+| `registration_types` | `GET /registration-types` | full table | Lookup |
+| `registration_paths` | `GET /registration-paths` | full table | Lookup |
+| `admission_items` | `GET /admission-items` | full table | Tickets |
+| `donation_items` | `GET /donation-items` | full table | Registration donations |
+| `quantity_items` | `GET /quantity-items` | full table | Add-ons |
+| `membership_items` | `GET /membership-items` | full table | Memberships |
+| `fee_items` | `GET /fee-items` | full table | Service fees |
+| `program_items` | `GET /program-items` | full table | Sessions |
+
+Cvent exposes no single products endpoint. Each product type is its own event-scoped
+catalog, and `transaction_items.product.{id,type}` joins into the matching catalog to
+resolve a SKU for GL code and campaign mapping.
+
+### Pagination
+
+List responses wrap records in a `data` array alongside a `paging` object:
+
+```json
+{ "paging": { "limit": 100, "totalCount": 500, "currentToken": "ce44b066-…" }, "data": [] }
+```
+
+The tap requests 100 records per call and passes `paging.currentToken` back as the
+`token` query parameter. Cvent returns a `currentToken` even on the final page, so the
+tap stops when a page comes back shorter than the requested limit.
+
+### Incremental sync
+
+Streams with a `lastModified` replication key send a `filter=lastModified gt '…'` query
+parameter built from the state bookmark, falling back to `start_date` on the first run.
+Not every Cvent endpoint supports filters; if one rejects the parameter, drop the
+`replication_key` on that stream so it syncs as a full table.
+
+Selecting any event-scoped stream forces `events` to full-table replication, and the SDK
+logs a warning saying so. This is intentional: an event whose own `lastModified` has not
+changed can still gain new attendees or transactions, so the parent must be listed in
+full to avoid missing children.
+
+### Rate limits
+
+The API returns `429` when the rate limit is exceeded. The SDK retries `429` and `5xx`
+responses with exponential backoff. A `403` means the OAuth app is missing a scope for
+that endpoint rather than a transient failure.
 
 ## Requirements
 
@@ -55,9 +110,11 @@ tap-cvent --help
 | ------- | ---- | -------- | ------- | ----------- |
 | `start_date` | string (datetime) | no | `2000-01-01T00:00:00Z` | Earliest record date to sync. |
 | `api_url` | string | no | `https://api-platform.cvent.com/ea` | Base URL for the API. |
-| `client_id` | string | yes | — | OAuth client ID. |
-| `client_secret` | string | yes | — | OAuth client secret. |
-| `refresh_token` | string | no | — | OAuth refresh token (if applicable). |
+| `client_id` | string | yes | — | OAuth client ID. **Sensitive.** |
+| `client_secret` | string | yes | — | OAuth client secret. **Sensitive.** |
+
+Cvent uses the client-credentials grant, so there is no refresh token. Access tokens
+last 60 minutes and the tap re-runs the token exchange when one expires.
 
 Run `tap-cvent --about` (or `tap-cvent --about --format=markdown`) for the authoritative schema for your installed version.
 
@@ -68,8 +125,7 @@ Run `tap-cvent --about` (or `tap-cvent --about --format=markdown`) for the autho
   "start_date": "2000-01-01T00:00:00Z",
   "api_url": "https://api-platform.cvent.com/ea",
   "client_id": "YOUR_CLIENT_ID",
-  "client_secret": "YOUR_CLIENT_SECRET",
-  "refresh_token": ""
+  "client_secret": "YOUR_CLIENT_SECRET"
 }
 ```
 
@@ -109,7 +165,31 @@ tap-cvent --about
 
 ## API / documentation
 
-TODO: Add your vendor’s base URLs, auth docs, and links (compare to the “API hosts” section in a finished tap README).
+### API hosts
+
+| Region | Base URL |
+| ------ | -------- |
+| US / global | `https://api-platform.cvent.com/ea` |
+| EMEA | `https://api-platform-eur.cvent.com/ea` |
+
+The OAuth token endpoint is `POST {api_url}/oauth2/token`. It takes the client id and
+secret as an HTTP Basic header with `grant_type=client_credentials` and `client_id` in a
+form-encoded body, and returns a Bearer token valid for 60 minutes.
+
+### Required scopes
+
+The OAuth app needs read scopes for every selected stream:
+`event/events:read`, `event/contacts:read`, `event/attendees:read`, `event/orders:read`,
+`event/transactions:read`, `event/registration-types:read`,
+`event/registration-paths:read`, `event/admission-items:read`,
+`event/donation-items:read`, `event/quantity-items:read`,
+`event/membership-items:read`, `event/fee-items:read`, and `event/program-items:read`.
+
+### Links
+
+- [Developer quickstart](https://developers.cvent.com/docs/rest-api/tutorials/developer-quickstart)
+- [API reference: auth, pagination, error codes](https://developers.cvent.com/docs/rest-api/reference/reference)
+- [Filter syntax](https://developers.cvent.com/docs/rest-api/reference/filters)
 
 
 ## License

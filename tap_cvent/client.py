@@ -1,4 +1,4 @@
-"""HTTP API client (REST or GraphQL), including CventStream base class."""
+"""REST client, including the CventStream base class."""
 
 from __future__ import annotations
 
@@ -7,28 +7,31 @@ from typing import Any
 
 import requests
 from hotglue_singer_sdk.authenticators import APIAuthenticatorBase
-from hotglue_singer_sdk.helpers.jsonpath import extract_jsonpath
 from hotglue_singer_sdk.streams import RESTStream
 from typing_extensions import override
 
+DEFAULT_API_URL = "https://api-platform.cvent.com/ea"
+
 
 class CventStream(RESTStream):
-    """Cvent stream class."""
+    """Cvent stream class.
 
-    # Update this value if necessary or override `parse_response`.
-    records_jsonpath = "$[*]"
+    Every list endpoint returns the same envelope::
 
-    # TODO: set to the jsonpath of the next-page token in your API's response, or
-    # set to None if pagination uses headers / a different mechanism.
-    next_page_token_jsonpath = "$.next_page"
+        {
+          "paging": {"limit": 100, "totalCount": 1, "currentToken": "<uuid>"},
+          "data": [ ...records... ]
+        }
+    """
+
+    records_jsonpath = "$.data[*]"
+    page_size = 100
 
     @override
     @property
     def url_base(self) -> str:
         """Return the API URL root, configurable via the ``api_url`` tap setting."""
-        # TODO: You can make the base URL dynamic here — for example, return different API URIs
-        # based on flags such as sandbox, country/region, or other environment cues.
-        return self.config.get("api_url", "https://api-platform.cvent.com/ea")
+        return self.config.get("api_url", DEFAULT_API_URL)
 
     @override
     @cached_property
@@ -39,7 +42,7 @@ class CventStream(RESTStream):
             An authenticator instance.
         """
         authenticator_cls, auth_endpoint = self._tap.access_token_support(self._tap)
-        return authenticator_cls(self, self.config, auth_endpoint=auth_endpoint)
+        return authenticator_cls(self, auth_endpoint=auth_endpoint)
 
     @override
     @property
@@ -49,33 +52,33 @@ class CventStream(RESTStream):
         Returns:
             A dictionary of HTTP headers.
         """
-        return {}
+        return {"Accept": "application/json"}
 
+    @override
     def get_next_page_token(
         self,
         response: requests.Response,
         previous_token: Any | None,
     ) -> Any | None:
-        """Return token identifying next page or None if all records have been read.
+        """Return the paging token for the next page, or None when done.
 
         Args:
             response: A raw `requests.Response`_ object.
             previous_token: Previous pagination reference.
 
         Returns:
-            Reference value to retrieve next page.
+            The ``paging.currentToken`` to send as the next ``token`` param.
 
         .. _requests.Response:
             https://requests.readthedocs.io/en/latest/api/#requests.Response
         """
-        if self.next_page_token_jsonpath:
-            all_matches = extract_jsonpath(self.next_page_token_jsonpath, response.json())
-            first_match = next(iter(all_matches), None)
-            next_page_token = first_match
-        else:
-            next_page_token = response.headers.get("X-Next-Page", None)
-
-        return next_page_token
+        body = response.json()
+        token = body.get("paging", {}).get("currentToken")
+        # Cvent echoes currentToken on the final page too, so a partial page — not a
+        # missing token — is what reliably marks the end of the result set.
+        if token == previous_token or len(body.get("data", [])) < self.page_size:
+            return None
+        return token
 
     @override
     def get_url_params(
@@ -92,49 +95,15 @@ class CventStream(RESTStream):
         Returns:
             A dictionary of URL query parameters.
         """
-        # TODO: replace with your API's actual query params (pagination token, date filters, etc.).
-        params: dict = {}
+        params: dict[str, Any] = {"limit": self.page_size}
         if next_page_token:
-            params["page"] = next_page_token
-        if self.replication_key:
-            params["sort"] = "asc"
-            params["order_by"] = self.replication_key
+            params["token"] = next_page_token
+        # get_starting_time falls back to the configured start_date when no bookmark
+        # has been written yet, which is the case on a stream's first request.
+        start_date = self.get_starting_time(context) if self.replication_key else None
+        if start_date:
+            # Cvent filter grammar is "<field> <operator> '<value>'".
+            params["filter"] = (
+                f"{self.replication_key} gt '{start_date.strftime('%Y-%m-%dT%H:%M:%SZ')}'"
+            )
         return params
-
-    @override
-    def prepare_request_payload(
-        self,
-        context: dict | None,
-        next_page_token: Any | None,
-    ) -> dict | None:
-        """Prepare the data payload for the REST API request.
-
-        By default, no payload will be sent (return None).
-
-        Args:
-            context: The stream context.
-            next_page_token: The next page index or value.
-
-        Returns:
-            A dictionary with the JSON body for a POST requests.
-        """
-        # TODO: Delete this method if no payload is required. (Most REST APIs.)
-        return None
-
-    @override
-    def post_process(
-        self,
-        row: dict,
-        context: dict | None = None,
-    ) -> dict | None:
-        """As needed, append or transform raw data to match expected structure.
-
-        Args:
-            row: An individual record from the stream.
-            context: The stream context.
-
-        Returns:
-            The updated record dictionary, or ``None`` to skip the record.
-        """
-        # TODO: Delete this method if not needed.
-        return row

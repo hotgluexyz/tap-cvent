@@ -2,6 +2,9 @@
 config.json
 .secrets/
 
+# Error reports written by the SDK on a failed run
+hg-tap-exception-*.json
+
 # Ignore meltano internal cache and sqlite systemdb
 
 .meltano/

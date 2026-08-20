@@ -1,6 +1,7 @@
 """Tests standard tap features using the built-in SDK tests library."""
 
 import datetime
+
 import pytest
 from hotglue_singer_sdk.testing import get_standard_tap_tests
 
