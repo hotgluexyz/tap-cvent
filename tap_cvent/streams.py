@@ -3,9 +3,10 @@
 Endpoint layout (all under ``https://api-platform.cvent.com/ea``):
 
 * Account-wide lists — ``/events``, ``/contacts``, ``/contact-types``, ``/orders``,
-  ``/orders/items``, ``/transactions``, ``/transactions/items``.
-* Event-scoped lists — everything else, selected with ``?eventId=<id>`` and synced
-  as children of ``EventsStream``.
+  ``/transactions``.
+* Event-scoped lists — ``?eventId=<id>`` children of ``EventsStream``, plus order and
+  transaction line items under ``/events/{event_id}/orders/items`` and
+  ``/events/{event_id}/transactions/items``.
 
 Cvent has no single products endpoint. Each product type is its own event-scoped
 list, and ``transaction_items.product.{id,type}`` joins into the matching catalog
@@ -136,6 +137,20 @@ class EventChildStream(CventStream):
         return row
 
 
+class EventNestedStream(CventStream):
+    """Event-scoped endpoints whose event id is a path segment, not ``?eventId=``."""
+
+    parent_stream_type = EventsStream
+    ignore_parent_replication_key = True
+    primary_keys: ClassVar[list[str]] = ["id"]
+
+    @override
+    def post_process(self, row: dict, context: dict | None = None) -> dict | None:
+        """Stamp the parent event id onto the record."""
+        row["event_id"] = context["event_id"]
+        return row
+
+
 class ContactsStream(CventStream):
     """Stream for ``contacts`` — the account address book, matched to DP donors."""
 
@@ -217,16 +232,16 @@ class OrdersStream(CventStream):
     ).to_dict()
 
 
-class OrderItemsStream(CventStream):
+class OrderItemsStream(EventNestedStream):
     """Stream for ``order_items`` — line items on an order."""
 
     name = "order_items"
-    path = "/orders/items"
-    primary_keys: ClassVar[list[str]] = ["id"]
+    path = "/events/{event_id}/orders/items"
     replication_key = "lastModified"
 
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
+        th.Property("event_id", th.StringType, description="Parent event id"),
         th.Property("order", nested()),
         th.Property("event", nested()),
         th.Property("attendee", nested()),
@@ -270,16 +285,16 @@ class TransactionsStream(CventStream):
     ).to_dict()
 
 
-class TransactionItemsStream(CventStream):
+class TransactionItemsStream(EventNestedStream):
     """Stream for ``transaction_items`` — charge lines carrying the product SKU."""
 
     name = "transaction_items"
-    path = "/transactions/items"
-    primary_keys: ClassVar[list[str]] = ["id"]
+    path = "/events/{event_id}/transactions/items"
     replication_key = "lastModified"
 
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
+        th.Property("event_id", th.StringType, description="Parent event id"),
         th.Property("transaction", nested()),
         th.Property("order", nested()),
         th.Property("event", nested()),

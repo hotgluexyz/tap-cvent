@@ -6,7 +6,13 @@ import pytest
 import requests
 
 from tap_cvent.auth import CventAuthenticator
-from tap_cvent.streams import AttendeesStream, ContactTypesStream, EventsStream
+from tap_cvent.streams import (
+    AttendeesStream,
+    ContactTypesStream,
+    EventsStream,
+    OrderItemsStream,
+    TransactionItemsStream,
+)
 from tap_cvent.tap import TapCvent
 
 SAMPLE_CONFIG = {
@@ -81,6 +87,22 @@ def test_child_stream_stamps_event_id(tap):
     stream = AttendeesStream(tap=tap)
     row = stream.post_process({"id": "att-1"}, {"event_id": "evt-1"})
     assert row["event_id"] == "evt-1"
+
+
+def test_nested_item_streams_use_event_path(tap):
+    """Line items live under /events/{id}/..., not the 404 account-wide item paths."""
+    context = {"event_id": "evt-1"}
+    order_items = OrderItemsStream(tap=tap)
+    txn_items = TransactionItemsStream(tap=tap)
+
+    assert order_items.parent_stream_type is EventsStream
+    assert txn_items.parent_stream_type is EventsStream
+    assert order_items.get_url(context).endswith("/events/evt-1/orders/items")
+    assert txn_items.get_url(context).endswith("/events/evt-1/transactions/items")
+    assert "eventId" not in order_items.get_url_params(context, None)
+    assert "eventId" not in txn_items.get_url_params(context, None)
+    assert order_items.post_process({"id": "oi-1"}, context)["event_id"] == "evt-1"
+    assert txn_items.post_process({"id": "ti-1"}, context)["event_id"] == "evt-1"
 
 
 def test_token_request_uses_basic_auth_and_client_credentials(tap):

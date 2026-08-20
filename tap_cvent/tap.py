@@ -36,10 +36,10 @@ STREAM_TYPES = [
     ContactsStream,
     ContactTypesStream,
     OrdersStream,
-    OrderItemsStream,
     TransactionsStream,
-    TransactionItemsStream,
     # Event-scoped children of EventsStream
+    OrderItemsStream,
+    TransactionItemsStream,
     AttendeesStream,
     RegistrationTypesStream,
     RegistrationPathsStream,

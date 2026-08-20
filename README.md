@@ -22,15 +22,16 @@ Account-wide streams:
 | `contacts` | `GET /contacts` | `lastModified` | Address book; matched to DonorPerfect constituents |
 | `contact_types` | `GET /contact-types` | full table | Lookup |
 | `orders` | `GET /orders` | `lastModified` | Purchase intent, **not** money |
-| `order_items` | `GET /orders/items` | `lastModified` | Line items purchased |
 | `transactions` | `GET /transactions` | `lastModified` | Charge/refund headers — the gift source |
-| `transaction_items` | `GET /transactions/items` | `lastModified` | Charge lines carrying `product.{id,type}` |
 
-Event-scoped streams, synced as children of `events` with `?eventId=` and stamped with
-an `event_id` field:
+Event-scoped streams, synced as children of `events` and stamped with an `event_id`
+field. Catalogs and attendees use `?eventId=`; line items use the event id in the path
+because Cvent has no account-wide `/orders/items` or `/transactions/items`.
 
 | Stream | Endpoint | Replication key | Role |
 | ------ | -------- | --------------- | ---- |
+| `order_items` | `GET /events/{event_id}/orders/items` | `lastModified` | Line items purchased |
+| `transaction_items` | `GET /events/{event_id}/transactions/items` | `lastModified` | Charge lines carrying `product.{id,type}` |
 | `attendees` | `GET /attendees` | `lastModified` | Registrations / participation |
 | `registration_types` | `GET /registration-types` | full table | Lookup |
 | `registration_paths` | `GET /registration-paths` | full table | Lookup |
