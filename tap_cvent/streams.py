@@ -271,17 +271,32 @@ class TransactionsStream(CventStream):
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
         th.Property("event", nested()),
-        th.Property("order", nested()),
         th.Property("attendee", nested()),
         th.Property("contact", nested()),
-        th.Property("type", th.StringType, description="Charge, Refund, ..."),
-        th.Property("status", th.StringType),
+        # Cvent returns orders[], not a single order object.
+        th.Property("orders", nested_list()),
+        th.Property(
+            "paymentType",
+            th.StringType,
+            description="Offline Charge, Offline Refund, and other Cvent payment types",
+        ),
+        th.Property("paymentMethod", th.StringType),
+        th.Property(
+            "success",
+            th.BooleanType,
+            description="False means the charge did not clear; ETL should not emit a gift",
+        ),
         th.Property("amount", th.NumberType),
         th.Property("currency", th.StringType),
-        th.Property("paymentMethod", th.StringType),
-        th.Property("transactionDate", th.DateTimeType),
+        th.Property("date", th.DateTimeType),
+        th.Property("journalNumber", th.StringType),
+        th.Property("batchNumber", th.StringType),
+        th.Property("referenceNumber", th.StringType),
+        th.Property("paymentNote", th.StringType),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
+        th.Property("createdBy", th.StringType),
+        th.Property("lastModifiedBy", th.StringType),
     ).to_dict()
 
 
