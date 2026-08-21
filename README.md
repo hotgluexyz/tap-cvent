@@ -25,21 +25,23 @@ Account-wide streams:
 | `transactions` | `GET /transactions` | `lastModified` | Charge/refund headers — the gift source |
 
 Event-scoped streams, synced as children of `events` and stamped with an `event_id`
-field. Catalogs and attendees use `?eventId=`; line items use the event id in the path
-because Cvent has no account-wide `/orders/items` or `/transactions/items`.
+field. Attendees, admission items, and program items use `?eventId=`. Everything else
+puts the event id in the path because Cvent has no account-wide `/orders/items`,
+`/transactions/items`, `/registration-types`, `/registration-paths`, `/donation-items`,
+`/quantity-items`, `/membership-items`, or `/fee-items`.
 
 | Stream | Endpoint | Replication key | Role |
 | ------ | -------- | --------------- | ---- |
 | `order_items` | `GET /events/{event_id}/orders/items` | `lastModified` | Line items purchased |
 | `transaction_items` | `GET /events/{event_id}/transactions/items` | `lastModified` | Charge lines carrying `product.{id,type}` |
 | `attendees` | `GET /attendees` | `lastModified` | Registrations / participation |
-| `registration_types` | `GET /registration-types` | full table | Lookup |
-| `registration_paths` | `GET /registration-paths` | full table | Lookup |
+| `registration_types` | `GET /events/{event_id}/registration-types` | full table | Lookup |
+| `registration_paths` | `GET /events/{event_id}/registration-paths` | full table | Lookup |
 | `admission_items` | `GET /admission-items` | full table | Tickets |
-| `donation_items` | `GET /donation-items` | full table | Registration donations |
-| `quantity_items` | `GET /quantity-items` | full table | Add-ons |
-| `membership_items` | `GET /membership-items` | full table | Memberships |
-| `fee_items` | `GET /fee-items` | full table | Service fees |
+| `donation_items` | `GET /events/{event_id}/donation-items` | full table | Registration donations |
+| `quantity_items` | `GET /events/{event_id}/quantity-items` | full table | Add-ons |
+| `membership_items` | `GET /events/{event_id}/membership-items` | full table | Memberships |
+| `fee_items` | `GET /events/{event_id}/fee-items` | full table | Service fees |
 | `program_items` | `GET /program-items` | full table | Sessions |
 
 Cvent exposes no single products endpoint. Each product type is its own event-scoped
