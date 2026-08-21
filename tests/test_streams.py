@@ -9,8 +9,14 @@ from tap_cvent.auth import CventAuthenticator
 from tap_cvent.streams import (
     AttendeesStream,
     ContactTypesStream,
+    DonationItemsStream,
     EventsStream,
+    FeeItemsStream,
+    MembershipItemsStream,
     OrderItemsStream,
+    QuantityItemsStream,
+    RegistrationPathsStream,
+    RegistrationTypesStream,
     TransactionItemsStream,
 )
 from tap_cvent.tap import TapCvent
@@ -71,6 +77,17 @@ def test_full_table_stream_sends_no_filter(tap):
     assert "filter" not in stream.get_url_params(None, None)
 
 
+def test_contact_types_skips_403(tap):
+    """Missing event/contact-types:read must not fail the rest of the tap."""
+    stream = ContactTypesStream(tap=tap)
+    response = requests.Response()
+    response.status_code = 403
+    response._content = b'{"message": "Forbidden"}'
+    stream.validate_response(response)
+    assert list(stream.parse_response(response)) == []
+    assert stream.get_next_page_token(response, None) is None
+
+
 def test_child_context_passes_event_id(tap):
     stream = EventsStream(tap=tap)
     assert stream.get_child_context({"id": "evt-1"}, None) == {"event_id": "evt-1"}
@@ -103,6 +120,32 @@ def test_nested_item_streams_use_event_path(tap):
     assert "eventId" not in txn_items.get_url_params(context, None)
     assert order_items.post_process({"id": "oi-1"}, context)["event_id"] == "evt-1"
     assert txn_items.post_process({"id": "ti-1"}, context)["event_id"] == "evt-1"
+
+
+def test_nested_lookup_streams_use_event_path(tap):
+    """Registration types and paths 404 at /registration-types and /registration-paths."""
+    context = {"event_id": "evt-1"}
+    types_stream = RegistrationTypesStream(tap=tap)
+    paths_stream = RegistrationPathsStream(tap=tap)
+
+    assert types_stream.get_url(context).endswith("/events/evt-1/registration-types")
+    assert paths_stream.get_url(context).endswith("/events/evt-1/registration-paths")
+    assert "eventId" not in types_stream.get_url_params(context, None)
+    assert "eventId" not in paths_stream.get_url_params(context, None)
+
+
+def test_nested_catalog_streams_use_event_path(tap):
+    """Donation, quantity, membership, and fee catalogs 404 at the account-wide paths."""
+    context = {"event_id": "evt-1"}
+    streams = [
+        (DonationItemsStream(tap=tap), "/events/evt-1/donation-items"),
+        (QuantityItemsStream(tap=tap), "/events/evt-1/quantity-items"),
+        (MembershipItemsStream(tap=tap), "/events/evt-1/membership-items"),
+        (FeeItemsStream(tap=tap), "/events/evt-1/fee-items"),
+    ]
+    for stream, suffix in streams:
+        assert stream.get_url(context).endswith(suffix)
+        assert "eventId" not in stream.get_url_params(context, None)
 
 
 def test_token_request_uses_basic_auth_and_client_credentials(tap):

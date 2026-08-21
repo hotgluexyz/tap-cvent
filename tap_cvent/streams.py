@@ -4,9 +4,10 @@ Endpoint layout (all under ``https://api-platform.cvent.com/ea``):
 
 * Account-wide lists — ``/events``, ``/contacts``, ``/contact-types``, ``/orders``,
   ``/transactions``.
-* Event-scoped lists — ``?eventId=<id>`` children of ``EventsStream``, plus order and
-  transaction line items under ``/events/{event_id}/orders/items`` and
-  ``/events/{event_id}/transactions/items``.
+* Event-scoped lists — ``?eventId=<id>`` children of ``EventsStream`` (attendees,
+  admission items, program items), plus nested paths under
+  ``/events/{event_id}/...`` for line items, registration lookups, and the
+  remaining product catalogs.
 
 Cvent has no single products endpoint. Each product type is its own event-scoped
 list, and ``transaction_items.product.{id,type}`` joins into the matching catalog
@@ -15,8 +16,9 @@ stream to resolve a SKU for GL code and campaign mapping.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Iterable
 
+import requests
 from hotglue_singer_sdk import typing as th  # JSON Schema typing helpers
 from typing_extensions import override
 
@@ -38,10 +40,10 @@ def nested_list() -> th.CustomType:
 
 
 def catalog_schema(*extra: th.Property) -> dict:
-    """Return the shared schema for the per-type product catalogs.
+    """Return the shared id/name/code core for product catalogs.
 
-    Admission, donation, quantity, membership, fee, and program items all expose the
-    same core shape; ``extra`` adds the fields specific to one product type.
+    Cvent catalogs do not share price/status/currency. Each stream adds the fields
+    that endpoint actually returns.
     """
     return th.PropertiesList(
         th.Property(
@@ -53,12 +55,6 @@ def catalog_schema(*extra: th.Property) -> dict:
         th.Property("name", th.StringType),
         th.Property("code", th.StringType),
         th.Property("description", th.StringType),
-        th.Property("status", th.StringType),
-        th.Property("price", th.NumberType),
-        th.Property("currency", th.StringType),
-        th.Property("category", nested()),
-        th.Property("created", th.DateTimeType),
-        th.Property("lastModified", th.DateTimeType),
         *extra,
     ).to_dict()
 
@@ -169,16 +165,23 @@ class ContactsStream(CventStream):
         th.Property("email", th.StringType),
         th.Property("title", th.StringType),
         th.Property("company", th.StringType),
+        th.Property("designation", th.StringType),
+        th.Property("gender", th.StringType),
+        th.Property("pronouns", th.StringType),
         th.Property("mobilePhone", th.StringType),
         th.Property("workPhone", th.StringType),
         th.Property("homePhone", th.StringType),
-        # Address blocks: {line1, line2, city, state, postalCode, country}
+        th.Property("primaryAddressType", th.StringType),
+        # Address blocks: {line1, line2, city, region, postalCode, country}
         th.Property("homeAddress", nested()),
         th.Property("workAddress", nested()),
         th.Property("contactType", nested()),
         th.Property("source", th.StringType),
         th.Property("primaryLanguage", th.StringType),
-        th.Property("optOut", th.BooleanType),
+        # Cvent returns {optedOut, by}, not a boolean.
+        th.Property("optOut", nested()),
+        th.Property("deleted", th.BooleanType),
+        th.Property("purged", th.BooleanType),
         th.Property("customFields", nested_list()),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
@@ -202,6 +205,32 @@ class ContactTypesStream(CventStream):
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
     ).to_dict()
+
+    @override
+    def validate_response(self, response: requests.Response) -> None:
+        # Missing event/contact-types:read on this OAuth app; skip rather than fail.
+        if response.status_code == 403:
+            self.logger.warning(
+                "Skipping contact_types: OAuth app lacks event/contact-types:read"
+            )
+            return
+        super().validate_response(response)
+
+    @override
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        if response.status_code == 403:
+            return
+        yield from super().parse_response(response)
+
+    @override
+    def get_next_page_token(
+        self,
+        response: requests.Response,
+        previous_token: Any | None,
+    ) -> Any | None:
+        if response.status_code == 403:
+            return None
+        return super().get_next_page_token(response, previous_token)
 
 
 class OrdersStream(CventStream):
@@ -232,8 +261,12 @@ class OrdersStream(CventStream):
         th.Property("amountPaid", th.NumberType),
         th.Property("amountDue", th.NumberType),
         th.Property("paymentMethod", th.StringType),
+        th.Property("discounts", nested_list()),
+        th.Property("deleted", th.BooleanType),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
+        th.Property("createdBy", th.StringType),
+        th.Property("lastModifiedBy", th.StringType),
     ).to_dict()
 
 
@@ -253,18 +286,27 @@ class OrderItemsStream(EventNestedStream):
         # {id, type} where type is AdmissionItem, DonationItem, QuantityItem, etc.
         th.Property("product", nested()),
         th.Property("name", th.StringType),
+        th.Property("fee", nested()),
         th.Property(
             "active",
             th.BooleanType,
             description="False after the line is cancelled; paid amount can still remain",
         ),
-        th.Property("quantity", th.NumberType),
+        th.Property("guest", th.BooleanType),
+        th.Property("quantity", th.IntegerType),
         th.Property("price", th.NumberType),
         th.Property("amountOrdered", th.NumberType),
         th.Property("amountPaid", th.NumberType),
         th.Property("amountDue", th.NumberType),
+        th.Property("productPriceTierAmount", th.NumberType),
+        th.Property("tiered", th.BooleanType),
+        th.Property("generalLedgerItems", nested_list()),
+        th.Property("discounts", nested_list()),
+        th.Property("deleted", th.BooleanType),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
+        th.Property("createdBy", th.StringType),
+        th.Property("lastModifiedBy", th.StringType),
     ).to_dict()
 
 
@@ -305,6 +347,7 @@ class TransactionsStream(CventStream):
         th.Property("batchNumber", th.StringType),
         th.Property("referenceNumber", th.StringType),
         th.Property("paymentNote", th.StringType),
+        th.Property("billingAddress", nested()),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
         th.Property("createdBy", th.StringType),
@@ -321,19 +364,21 @@ class TransactionItemsStream(EventNestedStream):
 
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
+        th.Property("uniqueId", th.StringType),
         th.Property("event_id", th.StringType, description="Parent event id"),
         th.Property("transaction", nested()),
-        th.Property("order", nested()),
+        th.Property("orderItem", nested()),
         th.Property("event", nested()),
         th.Property("attendee", nested()),
         # {id, type}; join to the catalog stream matching type to resolve the SKU.
         th.Property("product", nested()),
-        th.Property("quantity", th.NumberType),
-        th.Property("unitPrice", th.NumberType),
+        th.Property("name", th.StringType),
         th.Property("amount", th.NumberType),
         th.Property("currency", th.StringType),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
+        th.Property("createdBy", th.StringType),
+        th.Property("lastModifiedBy", th.StringType),
     ).to_dict()
 
 
@@ -352,9 +397,13 @@ class AttendeesStream(EventChildStream):
         th.Property("admissionItem", nested()),
         th.Property("registrationType", nested()),
         th.Property("registrationPath", nested()),
+        th.Property("invitationList", nested()),
         th.Property("status", th.StringType, description="Accepted, Cancelled, ..."),
         th.Property("confirmationNumber", th.StringType),
+        th.Property("registeredAt", th.DateTimeType),
         th.Property("registrationCancelledAt", th.DateTimeType),
+        th.Property("registrationLastModified", th.DateTimeType),
+        th.Property("attendeeLastModified", th.DateTimeType),
         th.Property(
             "credit",
             th.NumberType,
@@ -366,37 +415,49 @@ class AttendeesStream(EventChildStream):
             th.StringType,
             description="Attendee id of the primary registrant, when guest is true",
         ),
-        th.Property("registrationDate", th.DateTimeType),
+        th.Property("group", nested()),
         th.Property("checkedIn", th.BooleanType),
+        th.Property("unsubscribed", th.BooleanType),
+        th.Property("testRecord", th.BooleanType),
+        th.Property("deletedGuest", th.BooleanType),
+        th.Property("invitedBy", th.StringType),
+        th.Property("responseMethod", th.StringType),
+        th.Property("webLinks", nested()),
+        th.Property("answers", nested_list()),
+        th.Property("allowAppointmentPushNotifications", th.BooleanType),
         th.Property("customFields", nested_list()),
         th.Property("created", th.DateTimeType),
         th.Property("lastModified", th.DateTimeType),
+        th.Property("createdBy", th.StringType),
+        th.Property("lastModifiedBy", th.StringType),
     ).to_dict()
 
 
-class RegistrationTypesStream(EventChildStream):
+class RegistrationTypesStream(EventNestedStream):
     """Stream for ``registration_types`` — lookup for registration categories."""
 
     name = "registration_types"
-    path = "/registration-types"
+    path = "/events/{event_id}/registration-types"
 
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
         th.Property("event_id", th.StringType, description="Parent event id"),
+        th.Property("event", nested()),
         th.Property("name", th.StringType),
         th.Property("code", th.StringType),
         th.Property("description", th.StringType),
-        th.Property("status", th.StringType),
-        th.Property("created", th.DateTimeType),
-        th.Property("lastModified", th.DateTimeType),
+        th.Property("registrationPath", nested()),
+        th.Property("virtual", th.BooleanType),
+        th.Property("openForRegistration", th.BooleanType),
+        th.Property("capacity", nested()),
     ).to_dict()
 
 
-class RegistrationPathsStream(EventChildStream):
+class RegistrationPathsStream(EventNestedStream):
     """Stream for ``registration_paths`` — lookup for registration flows."""
 
     name = "registration_paths"
-    path = "/registration-paths"
+    path = "/events/{event_id}/registration-paths"
 
     schema = th.PropertiesList(
         th.Property("id", th.StringType),
@@ -404,9 +465,6 @@ class RegistrationPathsStream(EventChildStream):
         th.Property("name", th.StringType),
         th.Property("code", th.StringType),
         th.Property("description", th.StringType),
-        th.Property("status", th.StringType),
-        th.Property("created", th.DateTimeType),
-        th.Property("lastModified", th.DateTimeType),
     ).to_dict()
 
 
@@ -417,56 +475,79 @@ class AdmissionItemsStream(EventChildStream):
     path = "/admission-items"
 
     schema = catalog_schema(
-        th.Property("capacity", th.IntegerType),
-        th.Property("guestsAllowed", th.IntegerType),
+        th.Property("event", nested()),
+        th.Property("allowOptionalSessions", th.BooleanType),
+        th.Property("includedSessions", nested_list()),
+        th.Property("limitedAvailableSessions", nested_list()),
+        th.Property("created", th.DateTimeType),
+        th.Property("lastModified", th.DateTimeType),
     )
 
 
-class DonationItemsStream(EventChildStream):
+class DonationItemsStream(EventNestedStream):
     """Stream for ``donation_items`` — donations collected during registration."""
 
     name = "donation_items"
-    path = "/donation-items"
+    path = "/events/{event_id}/donation-items"
 
     schema = catalog_schema(
-        th.Property("minimumAmount", th.NumberType),
-        th.Property("maximumAmount", th.NumberType),
+        th.Property("minimumAmountAllowedPerInvitee", th.NumberType),
+        th.Property("generalLedger", nested()),
+        th.Property("openForRegistration", th.BooleanType),
+        th.Property("automaticallyClosesOn", th.StringType),
+        th.Property("registrantInformation", th.StringType),
     )
 
 
-class QuantityItemsStream(EventChildStream):
+class QuantityItemsStream(EventNestedStream):
     """Stream for ``quantity_items`` — add-ons such as raffle tickets or merchandise."""
 
     name = "quantity_items"
-    path = "/quantity-items"
+    path = "/events/{event_id}/quantity-items"
 
     schema = catalog_schema(
+        th.Property("maximumItemsPerInvitee", th.IntegerType),
         th.Property("capacity", th.IntegerType),
-        th.Property("maximumQuantity", th.IntegerType),
+        th.Property("closeEventOnCapacityFull", th.BooleanType),
+        th.Property("openForRegistration", th.BooleanType),
+        th.Property("automaticallyClosesOn", th.StringType),
+        th.Property("registrantInformation", th.StringType),
     )
 
 
-class MembershipItemsStream(EventChildStream):
+class MembershipItemsStream(EventNestedStream):
     """Stream for ``membership_items`` — memberships sold at registration."""
 
     name = "membership_items"
-    path = "/membership-items"
+    path = "/events/{event_id}/membership-items"
 
     schema = catalog_schema(
         th.Property("duration", th.StringType),
+        th.Property("openForRegistration", th.BooleanType),
     )
 
 
-class FeeItemsStream(EventChildStream):
+class FeeItemsStream(EventNestedStream):
     """Stream for ``fee_items`` — service fees applied to an order."""
 
     name = "fee_items"
-    path = "/fee-items"
+    path = "/events/{event_id}/fee-items"
 
-    schema = catalog_schema(
-        th.Property("feeType", th.StringType),
-        th.Property("amountType", th.StringType),
-    )
+    schema = th.PropertiesList(
+        th.Property("id", th.StringType),
+        th.Property("event_id", th.StringType, description="Parent event id"),
+        th.Property("name", th.StringType),
+        th.Property("amount", th.NumberType),
+        th.Property("currency", th.StringType),
+        th.Property("product", nested()),
+        th.Property("active", th.BooleanType),
+        th.Property("display", th.BooleanType),
+        th.Property("default", th.BooleanType),
+        th.Property("created", th.DateTimeType),
+        th.Property("lastModified", th.DateTimeType),
+        th.Property("createdBy", th.StringType),
+        th.Property("lastModifiedBy", th.StringType),
+    ).to_dict()
 
 
 class ProgramItemsStream(EventChildStream):
@@ -479,4 +560,6 @@ class ProgramItemsStream(EventChildStream):
         th.Property("start", th.DateTimeType),
         th.Property("end", th.DateTimeType),
         th.Property("capacity", th.IntegerType),
+        th.Property("created", th.DateTimeType),
+        th.Property("lastModified", th.DateTimeType),
     )
