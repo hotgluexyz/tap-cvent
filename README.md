@@ -53,12 +53,12 @@ resolve a SKU for GL code and campaign mapping.
 List responses wrap records in a `data` array alongside a `paging` object:
 
 ```json
-{ "paging": { "limit": 100, "totalCount": 500, "currentToken": "ce44b066-…" }, "data": [] }
+{ "paging": { "limit": 100, "totalCount": 500, "currentToken": "ce44b066-…", "nextToken": "3b2359a7-…" }, "data": [] }
 ```
 
-The tap requests 100 records per call and passes `paging.currentToken` back as the
-`token` query parameter. Cvent returns a `currentToken` even on the final page, so the
-tap stops when a page comes back shorter than the requested limit.
+The tap requests 100 records per call and passes `paging.nextToken` back as the `token`
+query parameter, stopping once a response omits `nextToken`. `currentToken` names the
+page just received, so paging on it refetches that same page.
 
 ### Incremental sync
 

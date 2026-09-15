@@ -33,34 +33,45 @@ def tap():
     return TapCvent(config=SAMPLE_CONFIG, parse_env_config=False)
 
 
-def make_response(record_count, current_token="tok-2"):
+def make_response(record_count, next_token=None, current_token="cur-1"):
     """Build a Cvent list response carrying ``record_count`` records."""
     response = requests.Response()
+    paging = {"limit": 100, "totalCount": record_count, "currentToken": current_token}
+    if next_token is not None:
+        paging["nextToken"] = next_token
     body = {
-        "paging": {"limit": 100, "totalCount": record_count, "currentToken": current_token},
+        "paging": paging,
         "data": [{"id": str(i)} for i in range(record_count)],
     }
     response._content = json.dumps(body).encode()
     return response
 
 
-def test_full_page_returns_next_token(tap):
+def test_next_token_drives_pagination(tap):
     stream = EventsStream(tap=tap)
-    response = make_response(stream.page_size)
+    response = make_response(stream.page_size, next_token="tok-2")
     assert stream.get_next_page_token(response, None) == "tok-2"
 
 
-def test_short_page_ends_pagination(tap):
-    """Cvent returns currentToken on the last page, so a short page must stop paging."""
+def test_missing_next_token_ends_pagination(tap):
+    """Cvent omits nextToken only on the last page, even when that page is full."""
     stream = EventsStream(tap=tap)
-    response = make_response(1)
+    response = make_response(stream.page_size)
     assert stream.get_next_page_token(response, None) is None
 
 
-def test_repeated_token_ends_pagination(tap):
+def test_current_token_is_not_used_as_next_page(tap):
+    """currentToken names the page just received; paging on it refetches that page."""
     stream = EventsStream(tap=tap)
-    response = make_response(stream.page_size, current_token="tok-2")
-    assert stream.get_next_page_token(response, "tok-2") is None
+    response = make_response(stream.page_size, next_token="tok-2", current_token="cur-1")
+    assert stream.get_next_page_token(response, "cur-1") == "tok-2"
+
+
+def test_short_page_still_pages_when_next_token_present(tap):
+    """Page length must not gate pagination; Cvent may return a short non-final page."""
+    stream = EventsStream(tap=tap)
+    response = make_response(1, next_token="tok-2")
+    assert stream.get_next_page_token(response, None) == "tok-2"
 
 
 def test_url_params_carry_limit_token_and_filter(tap):

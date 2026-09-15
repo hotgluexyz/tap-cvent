@@ -19,7 +19,12 @@ class CventStream(RESTStream):
     Every list endpoint returns the same envelope::
 
         {
-          "paging": {"limit": 100, "totalCount": 1, "currentToken": "<uuid>"},
+          "paging": {
+            "limit": 100,
+            "totalCount": 102,
+            "currentToken": "<uuid>",
+            "nextToken": "<uuid>"
+          },
           "data": [ ...records... ]
         }
     """
@@ -67,18 +72,14 @@ class CventStream(RESTStream):
             previous_token: Previous pagination reference.
 
         Returns:
-            The ``paging.currentToken`` to send as the next ``token`` param.
+            The ``paging.nextToken`` to send as the next ``token`` param.
 
         .. _requests.Response:
             https://requests.readthedocs.io/en/latest/api/#requests.Response
         """
-        body = response.json()
-        token = body.get("paging", {}).get("currentToken")
-        # Cvent echoes currentToken on the final page too, so a partial page — not a
-        # missing token — is what reliably marks the end of the result set.
-        if token == previous_token or len(body.get("data", [])) < self.page_size:
-            return None
-        return token
+        # currentToken identifies the page just received, so it is never the next
+        # page; Cvent omits nextToken only on the last page.
+        return response.json().get("paging", {}).get("nextToken")
 
     @override
     def get_url_params(
