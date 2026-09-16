@@ -16,7 +16,8 @@ stream to resolve a SKU for GL code and campaign mapping.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Iterable
+from collections.abc import Iterable
+from typing import Any, ClassVar
 
 import requests
 from hotglue_singer_sdk import typing as th  # JSON Schema typing helpers
