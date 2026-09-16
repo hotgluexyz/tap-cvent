@@ -103,6 +103,27 @@ class EventsStream(CventStream):
     ).to_dict()
 
     @override
+    def get_url_params(
+        self,
+        context: dict | None,
+        next_page_token: Any | None,
+    ) -> dict[str, Any]:
+        """AND selected ``event_ids`` onto the standard list filter when configured."""
+        params = super().get_url_params(context, next_page_token)
+        # The selected event ids are stored in the config as a list of strings at connect time
+        event_ids = [event_id for event_id in (self.config.get("event_ids") or []) if event_id]
+        
+        if not event_ids:
+            return params
+
+        id_clause = " or ".join(f"id eq '{eid}'" for eid in event_ids)
+        if len(event_ids) > 1:
+            id_clause = f"({id_clause})"
+        existing = params.get("filter")
+        params["filter"] = f"{existing} and {id_clause}" if existing else id_clause
+        return params
+
+    @override
     def get_child_context(self, record: dict, context: dict | None) -> dict:
         """Pass the event id down to the event-scoped streams."""
         return {"event_id": record["id"]}
