@@ -243,9 +243,7 @@ def test_events_filter_ands_single_event_id():
     )
     stream = EventsStream(tap=tap)
     params = stream.get_url_params(None, None)
-    assert params["filter"] == (
-        "lastModified gt '2024-01-01T00:00:00Z' and id eq 'evt-1'"
-    )
+    assert params["filter"] == ("lastModified gt '2024-01-01T00:00:00Z' and id eq 'evt-1'")
 
 
 def test_events_filter_ors_multiple_event_ids():
@@ -256,8 +254,7 @@ def test_events_filter_ors_multiple_event_ids():
     stream = EventsStream(tap=tap)
     params = stream.get_url_params(None, None)
     assert params["filter"] == (
-        "lastModified gt '2024-01-01T00:00:00Z' and "
-        "(id eq 'evt-1' or id eq 'evt-2')"
+        "lastModified gt '2024-01-01T00:00:00Z' and (id eq 'evt-1' or id eq 'evt-2')"
     )
 
 

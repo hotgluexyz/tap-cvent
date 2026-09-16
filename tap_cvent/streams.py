@@ -113,7 +113,7 @@ class EventsStream(CventStream):
         params = super().get_url_params(context, next_page_token)
         # The selected event ids are stored in the config as a list of strings at connect time
         event_ids = [event_id for event_id in (self.config.get("event_ids") or []) if event_id]
-        
+
         if not event_ids:
             return params
 
@@ -232,9 +232,7 @@ class ContactTypesStream(CventStream):
     def validate_response(self, response: requests.Response) -> None:
         # Missing event/contact-types:read on this OAuth app; skip rather than fail.
         if response.status_code == 403:
-            self.logger.warning(
-                "Skipping contact_types: OAuth app lacks event/contact-types:read"
-            )
+            self.logger.warning("Skipping contact_types: OAuth app lacks event/contact-types:read")
             return
         super().validate_response(response)
 
