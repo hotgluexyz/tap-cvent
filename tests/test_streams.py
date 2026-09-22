@@ -33,6 +33,17 @@ def tap():
     return TapCvent(config=SAMPLE_CONFIG, parse_env_config=False)
 
 
+@pytest.fixture
+def tap_with_event_ids():
+    return TapCvent(
+        config={
+            **SAMPLE_CONFIG,
+            "event_ids": ["evt-1", "evt-2"],
+        },
+        parse_env_config=False,
+    )
+
+
 def make_response(record_count, next_token=None, current_token="cur-1"):
     """Build a Cvent list response carrying ``record_count`` records."""
     response = requests.Response()
@@ -289,6 +300,14 @@ def test_child_context_passes_event_id(tap):
     assert stream.get_child_context({"id": "evt-1"}, None) == {"event_id": "evt-1"}
 
 
+def test_events_stream_filters_by_configured_event_ids(tap_with_event_ids):
+    stream = EventsStream(tap=tap_with_event_ids)
+    params = stream.get_url_params(None, None)
+    assert "id eq 'evt-1'" in params["filter"]
+    assert "id eq 'evt-2'" in params["filter"]
+    assert "lastModified gt" in params["filter"]
+
+
 def test_child_stream_filters_by_event_id(tap):
     stream = AttendeesStream(tap=tap)
     params = stream.get_url_params({"event_id": "evt-1"}, None)
@@ -300,6 +319,35 @@ def test_child_stream_stamps_event_id(tap):
     stream = AttendeesStream(tap=tap)
     row = stream.post_process({"id": "att-1"}, {"event_id": "evt-1"})
     assert row["event_id"] == "evt-1"
+
+
+def test_child_stream_keeps_matching_nested_event(tap):
+    stream = AttendeesStream(tap=tap)
+    row = stream.post_process(
+        {"id": "att-1", "event": {"id": "evt-1", "title": "Match"}},
+        {"event_id": "evt-1"},
+    )
+    assert row is not None
+    assert row["event_id"] == "evt-1"
+
+
+def test_child_stream_keeps_case_insensitive_nested_event(tap):
+    stream = AttendeesStream(tap=tap)
+    row = stream.post_process(
+        {"id": "att-1", "event": {"id": "EVT-1"}},
+        {"event_id": "evt-1"},
+    )
+    assert row is not None
+    assert row["event_id"] == "evt-1"
+
+
+def test_child_stream_drops_mismatched_nested_event(tap):
+    stream = AttendeesStream(tap=tap)
+    row = stream.post_process(
+        {"id": "att-1", "event": {"id": "evt-other"}},
+        {"event_id": "evt-1"},
+    )
+    assert row is None
 
 
 def test_nested_item_streams_use_event_path(tap):

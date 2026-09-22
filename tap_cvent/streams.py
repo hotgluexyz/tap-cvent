@@ -150,8 +150,23 @@ class EventChildStream(CventStream):
 
     @override
     def post_process(self, row: dict, context: dict | None = None) -> dict | None:
-        """Stamp the parent event id onto the record."""
-        row["event_id"] = context["event_id"]
+        """Stamp the parent event id, dropping rows for a different nested event.
+
+        Cvent's ``?eventId=`` list can include attendees (and similar) whose nested
+        ``event.id`` belongs to another event. Drop those so downstream donors stay
+        scoped to the requested parent.
+        """
+        parent_id = context["event_id"] if context else None
+        event = row.get("event")
+        if isinstance(event, dict):
+            nested_id = event.get("id")
+            if (
+                nested_id is not None
+                and parent_id is not None
+                and str(nested_id).casefold() != str(parent_id).casefold()
+            ):
+                return None
+        row["event_id"] = parent_id
         return row
 
 
