@@ -85,12 +85,197 @@ def test_short_page_still_pages_when_next_token_present(tap):
     assert stream.get_next_page_token(response, None) == "tok-2"
 
 
+def walk_pages(stream, pages, monkeypatch):
+    """Drive the SDK paging loop over ``pages``, keyed by the token that requests each.
+
+    Returns the records yielded and the query params of every request made, so tests
+    can assert both the data and the request sequence.
+    """
+    params_seen = []
+
+    def fake_prepare_request(context, next_page_token=None):
+        params = stream.get_url_params(context, next_page_token)
+        params_seen.append(params)
+        return params
+
+    def fake_request(prepared_request, context):
+        record_count, next_token = pages[prepared_request.get("token")]
+        return make_response(record_count, next_token=next_token)
+
+    monkeypatch.setattr(stream, "prepare_request", fake_prepare_request)
+    monkeypatch.setattr(stream, "_request", fake_request)
+    return list(stream.request_records(None)), params_seen
+
+
+def test_pagination_walks_every_page(tap, monkeypatch):
+    """Three pages must yield every record exactly once, following nextToken each time."""
+    stream = EventsStream(tap=tap)
+    pages = {
+        None: (stream.page_size, "tok-2"),
+        "tok-2": (stream.page_size, "tok-3"),
+        "tok-3": (37, None),
+    }
+    records, params_seen = walk_pages(stream, pages, monkeypatch)
+
+    assert len(records) == 237
+    assert [p.get("token") for p in params_seen] == [None, "tok-2", "tok-3"]
+
+
+def test_pagination_stops_on_last_full_page(tap, monkeypatch):
+    """The old currentToken bug refetched page 1 here, yielding 200 rows and 100 ids."""
+    stream = EventsStream(tap=tap)
+    records, params_seen = walk_pages(stream, {None: (stream.page_size, None)}, monkeypatch)
+
+    assert len(params_seen) == 1
+    assert len(records) == stream.page_size
+    assert len({r["id"] for r in records}) == stream.page_size
+
+
+def test_pagination_handles_empty_trailing_page(tap, monkeypatch):
+    """Cvent may hand back a nextToken whose page is empty when totals divide evenly."""
+    stream = EventsStream(tap=tap)
+    pages = {None: (stream.page_size, "tok-2"), "tok-2": (0, None)}
+    records, params_seen = walk_pages(stream, pages, monkeypatch)
+
+    assert len(records) == stream.page_size
+    assert [p.get("token") for p in params_seen] == [None, "tok-2"]
+
+
+def test_pagination_requests_first_page_without_token(tap, monkeypatch):
+    stream = EventsStream(tap=tap)
+    _, params_seen = walk_pages(stream, {None: (5, None)}, monkeypatch)
+
+    assert "token" not in params_seen[0]
+    assert params_seen[0]["limit"] == stream.page_size
+    assert stream.page_size <= 200, "Cvent rejects a limit above 200"
+
+
+def test_repeated_next_token_raises_rather_than_looping(tap, monkeypatch):
+    """A server-side token loop must fail loudly instead of spinning or truncating."""
+    stream = EventsStream(tap=tap)
+    pages = {None: (stream.page_size, "tok-2"), "tok-2": (stream.page_size, "tok-2")}
+
+    with pytest.raises(RuntimeError, match="Loop detected in pagination"):
+        walk_pages(stream, pages, monkeypatch)
+
+
+class FakeCventList:
+    """A Cvent list endpoint: UUID page tokens, nextToken present only when more remain.
+
+    ``empty_trailing_page`` reproduces the documented case where an evenly divisible
+    result set hands back a nextToken whose page turns out to be empty.
+    """
+
+    def __init__(self, total, page_size, empty_trailing_page=False):
+        self.page_size = page_size
+        self.requests = 0
+        self.offsets = {}
+        offsets = list(range(0, total, page_size)) or [0]
+        if empty_trailing_page and total and total % page_size == 0:
+            offsets.append(total)
+        for position, offset in enumerate(offsets):
+            token = None if position == 0 else f"{offset:08d}-0000-4000-8000-000000000000"
+            following = offsets[position + 1] if position + 1 < len(offsets) else None
+            self.offsets[token] = (offset, following)
+        self.total = total
+
+    def serve(self, prepared_request, _context):
+        self.requests += 1
+        offset, following = self.offsets[prepared_request.get("token")]
+        records = [{"id": str(i)} for i in range(offset, min(offset + self.page_size, self.total))]
+        next_token = None if following is None else f"{following:08d}-0000-4000-8000-000000000000"
+        paging = {"limit": self.page_size, "totalCount": self.total, "currentToken": "cur"}
+        if next_token:
+            paging["nextToken"] = next_token
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps({"paging": paging, "data": records}).encode()
+        return response
+
+
+@pytest.mark.parametrize("total", [0, 1, 99, 100, 101, 199, 200, 201, 250, 1000, 2305])
+@pytest.mark.parametrize("empty_trailing_page", [False, True])
+def test_pagination_retrieves_exact_total(tap, monkeypatch, total, empty_trailing_page):
+    """Across every page boundary the tap must return each record once and then stop."""
+    stream = EventsStream(tap=tap)
+    api = FakeCventList(total, stream.page_size, empty_trailing_page)
+
+    monkeypatch.setattr(
+        stream,
+        "prepare_request",
+        lambda context, next_page_token=None: stream.get_url_params(context, next_page_token),
+    )
+    monkeypatch.setattr(stream, "_request", api.serve)
+    records = list(stream.request_records(None))
+
+    assert len(records) == total
+    assert len({r["id"] for r in records}) == total
+    assert api.requests == len(api.offsets)
+
+
+def test_child_stream_pagination_keeps_event_scope(tap, monkeypatch):
+    """Paging a child stream must not drop the event scoping on later pages."""
+    stream = AttendeesStream(tap=tap)
+    params_seen = []
+
+    def fake_prepare_request(context, next_page_token=None):
+        params = stream.get_url_params(context, next_page_token)
+        params_seen.append(params)
+        return params
+
+    def fake_request(prepared_request, context):
+        record_count, next_token = {None: (100, "tok-2"), "tok-2": (3, None)}[
+            prepared_request.get("token")
+        ]
+        return make_response(record_count, next_token=next_token)
+
+    monkeypatch.setattr(stream, "prepare_request", fake_prepare_request)
+    monkeypatch.setattr(stream, "_request", fake_request)
+    records = list(stream.request_records({"event_id": "evt-1"}))
+
+    assert len(records) == 103
+    assert [p["eventId"] for p in params_seen] == ["evt-1", "evt-1"]
+
+
 def test_url_params_carry_limit_token_and_filter(tap):
     """Without a bookmark the filter must still fall back to the configured start_date."""
     stream = EventsStream(tap=tap)
     params = stream.get_url_params(None, "tok-2")
     assert params["limit"] == stream.page_size
     assert params["token"] == "tok-2"
+    assert params["filter"] == "lastModified gt '2024-01-01T00:00:00Z'"
+
+
+def test_events_filter_ands_single_event_id():
+    """Configured event_ids must AND onto the lastModified filter."""
+    tap = TapCvent(
+        config={**SAMPLE_CONFIG, "event_ids": ["evt-1"]},
+        parse_env_config=False,
+    )
+    stream = EventsStream(tap=tap)
+    params = stream.get_url_params(None, None)
+    assert params["filter"] == ("lastModified gt '2024-01-01T00:00:00Z' and id eq 'evt-1'")
+
+
+def test_events_filter_ors_multiple_event_ids():
+    tap = TapCvent(
+        config={**SAMPLE_CONFIG, "event_ids": ["evt-1", "evt-2"]},
+        parse_env_config=False,
+    )
+    stream = EventsStream(tap=tap)
+    params = stream.get_url_params(None, None)
+    assert params["filter"] == (
+        "lastModified gt '2024-01-01T00:00:00Z' and (id eq 'evt-1' or id eq 'evt-2')"
+    )
+
+
+def test_events_filter_omitted_when_event_ids_empty():
+    tap = TapCvent(
+        config={**SAMPLE_CONFIG, "event_ids": []},
+        parse_env_config=False,
+    )
+    stream = EventsStream(tap=tap)
+    params = stream.get_url_params(None, None)
     assert params["filter"] == "lastModified gt '2024-01-01T00:00:00Z'"
 
 

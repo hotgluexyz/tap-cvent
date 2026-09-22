@@ -83,6 +83,17 @@ class TapCvent(Tap):
             required=True,
             description="OAuth client secret for the Cvent OAuth app",
         ),
+        th.Property(
+            "event_ids",
+            th.ArrayType(th.StringType),
+            description=(
+                "Optional list of Cvent event UUIDs to sync. When set, EventsStream "
+                "filters to these ids so event-scoped child streams (items, attendees, "
+                "etc.) only fan out for the selected events. Empty or absent syncs all "
+                "events. Account-wide streams (contacts, orders, transactions) are "
+                "unaffected."
+            ),
+        ),
     ).to_dict()
 
     @override
