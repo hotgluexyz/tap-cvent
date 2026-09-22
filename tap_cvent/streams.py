@@ -160,9 +160,12 @@ class EventChildStream(CventStream):
         event = row.get("event")
         if isinstance(event, dict):
             nested_id = event.get("id")
-            if nested_id is not None and parent_id is not None:
-                if str(nested_id).casefold() != str(parent_id).casefold():
-                    return None
+            if (
+                nested_id is not None
+                and parent_id is not None
+                and str(nested_id).casefold() != str(parent_id).casefold()
+            ):
+                return None
         row["event_id"] = parent_id
         return row
 
