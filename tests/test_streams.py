@@ -117,6 +117,35 @@ def test_child_stream_stamps_event_id(tap):
     assert row["event_id"] == "evt-1"
 
 
+def test_child_stream_keeps_matching_nested_event(tap):
+    stream = AttendeesStream(tap=tap)
+    row = stream.post_process(
+        {"id": "att-1", "event": {"id": "evt-1", "title": "Match"}},
+        {"event_id": "evt-1"},
+    )
+    assert row is not None
+    assert row["event_id"] == "evt-1"
+
+
+def test_child_stream_keeps_case_insensitive_nested_event(tap):
+    stream = AttendeesStream(tap=tap)
+    row = stream.post_process(
+        {"id": "att-1", "event": {"id": "EVT-1"}},
+        {"event_id": "evt-1"},
+    )
+    assert row is not None
+    assert row["event_id"] == "evt-1"
+
+
+def test_child_stream_drops_mismatched_nested_event(tap):
+    stream = AttendeesStream(tap=tap)
+    row = stream.post_process(
+        {"id": "att-1", "event": {"id": "evt-other"}},
+        {"event_id": "evt-1"},
+    )
+    assert row is None
+
+
 def test_nested_item_streams_use_event_path(tap):
     """Line items live under /events/{id}/..., not the 404 account-wide item paths."""
     context = {"event_id": "evt-1"}
